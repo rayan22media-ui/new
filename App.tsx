@@ -10,7 +10,8 @@ import AdminPanel from './components/AdminPanel';
 import ExchangeRatePanel from './components/ExchangeRatePanel';
 import { GoogleGenAI } from "@google/genai";
 
-const DB_KEY = 'story_accounting_db';
+// Endpoint API URL - Relative path assumes api.php is in the same folder as the built index.html
+const API_URL = './api.php';
 
 const App: React.FC = () => {
   // Authentication State
@@ -32,6 +33,7 @@ const App: React.FC = () => {
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [advice, setAdvice] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
+  const [apiError, setApiError] = useState<string>('');
 
   // Initialize Session
   useEffect(() => {
@@ -40,48 +42,54 @@ const App: React.FC = () => {
   }, []);
 
   // ---------------------------------------------------------
-  // 💾 LOCAL STORAGE DATABASE
+  // 🌐 API INTEGRATION
   // ---------------------------------------------------------
 
-  const loadData = () => {
+  const fetchAllData = async () => {
     try {
-      const storedData = localStorage.getItem(DB_KEY);
-      if (storedData) {
-        const parsed = JSON.parse(storedData);
-        setTransactions(parsed.transactions || []);
-        setUsers(parsed.users || []);
-        if (parsed.config) setConfig(parsed.config);
+      setLoading(true);
+      setApiError('');
+      const response = await fetch(`${API_URL}?action=getData`);
+      
+      // Check if response is valid JSON, if not (e.g. PHP error), get text
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error("API returned non-JSON:", text);
+        setApiError('خطأ في الاتصال بقاعدة البيانات. يرجى التحقق من api.php');
+        return;
       }
-    } catch (e) {
-      console.error("Failed to load local data", e);
+
+      if (data.error) {
+        setApiError(data.error);
+        return;
+      }
+      
+      if (data.transactions) setTransactions(data.transactions);
+      if (data.users) setUsers(data.users);
+      if (data.config) setConfig(data.config);
+      
+    } catch (error) {
+      console.error("Failed to fetch data:", error);
+      setApiError('فشل الاتصال بالسيرفر');
     } finally {
       setLoading(false);
     }
   };
 
-  const saveData = (newTransactions: Transaction[], newUsers: User[], newConfig: AppConfig) => {
-    const db = {
-      transactions: newTransactions,
-      users: newUsers,
-      config: newConfig
-    };
-    localStorage.setItem(DB_KEY, JSON.stringify(db));
-    // Update State
-    setTransactions(newTransactions);
-    setUsers(newUsers);
-    setConfig(newConfig);
-  };
-
   useEffect(() => {
-    loadData();
-  }, []);
+    if (currentUser) {
+      fetchAllData();
+    }
+  }, [currentUser]);
 
   // ---------------------------------------------------------
-  // 📊 EXCEL (CSV) IMPORT / EXPORT
+  // 📊 EXCEL (CSV) IMPORT / EXPORT (Client Side)
   // ---------------------------------------------------------
 
   const exportToCSV = () => {
-    // BOM for Excel to read Arabic correctly
     const BOM = "\uFEFF"; 
     const headers = ['ID', 'Invoice Number', 'Date', 'Type', 'Customer', 'Description', 'Amount', 'Quantity', 'Currency', 'Is Paid'];
     
@@ -90,7 +98,7 @@ const App: React.FC = () => {
       t.invoiceNumber,
       t.date,
       t.type,
-      `"${t.customerName || ''}"`, // Quote strings with commas
+      `"${t.customerName || ''}"`,
       `"${t.description}"`,
       t.amount,
       t.quantity,
@@ -99,7 +107,6 @@ const App: React.FC = () => {
     ]);
 
     const csvContent = BOM + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-    
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -115,24 +122,21 @@ const App: React.FC = () => {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (e) => {
+    reader.onload = async (e) => {
       const text = e.target?.result as string;
       if (!text) return;
 
       const lines = text.split('\n');
-      const newTrans: Transaction[] = [];
+      let count = 0;
 
-      // Skip header row (index 0)
       for (let i = 1; i < lines.length; i++) {
         const line = lines[i].trim();
         if (!line) continue;
         
-        // Simple CSV parser (doesn't handle commas inside quotes perfectly without regex, but sufficient for simple import)
-        // Removing quotes for cleaner data
         const cols = line.split(',').map(c => c.replace(/^"|"$/g, ''));
         
         if (cols.length >= 9) {
-          newTrans.push({
+          const t: Transaction = {
             id: cols[0] || crypto.randomUUID(),
             invoiceNumber: cols[1] || `IMP-${i}`,
             date: cols[2] || new Date().toISOString().split('T')[0],
@@ -143,17 +147,18 @@ const App: React.FC = () => {
             quantity: parseFloat(cols[7]) || 1,
             currency: (cols[8] as Currency) || Currency.USD,
             isPaid: cols[9]?.toLowerCase() === 'true',
-            exchangeRate: 1 // Default
+            exchangeRate: 1 
+          };
+          
+          await fetch(`${API_URL}?action=saveTransaction`, {
+            method: 'POST',
+            body: JSON.stringify(t)
           });
+          count++;
         }
       }
-
-      if (confirm(`تم العثور على ${newTrans.length} معاملة. هل تريد استبدال البيانات الحالية؟\n(اضغط Cancel للإضافة فوق البيانات الحالية)`)) {
-         saveData(newTrans, users, config);
-      } else {
-         saveData([...transactions, ...newTrans], users, config);
-      }
-      alert('تم استيراد البيانات بنجاح!');
+      alert(`تم استيراد ${count} معاملة بنجاح!`);
+      fetchAllData();
     };
     reader.readAsText(file);
   };
@@ -174,24 +179,25 @@ const App: React.FC = () => {
   };
 
   const handleTransactionSubmit = async (data: any) => {
-    let updatedTransactions = [...transactions];
-    
-    if (editingTransaction) {
-      updatedTransactions = updatedTransactions.map(t => 
-        t.id === editingTransaction.id ? { ...data, id: t.id, invoiceNumber: t.invoiceNumber } : t
-      );
-    } else {
-      const newTransaction = {
-        ...data,
-        id: crypto.randomUUID(),
-        invoiceNumber: `ST-${new Date().getFullYear()}${String(transactions.length + 1).padStart(4, '0')}`
-      };
-      updatedTransactions = [newTransaction, ...updatedTransactions];
-    }
+    const transactionData = {
+      ...data,
+      id: editingTransaction ? editingTransaction.id : crypto.randomUUID(),
+      invoiceNumber: editingTransaction ? editingTransaction.invoiceNumber : `ST-${new Date().getFullYear()}${String(transactions.length + 1).padStart(4, '0')}`
+    };
 
-    saveData(updatedTransactions, users, config);
-    setEditingTransaction(null);
-    setActiveTab('history');
+    try {
+      await fetch(`${API_URL}?action=saveTransaction`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(transactionData)
+      });
+      
+      fetchAllData(); // Refresh data
+      setEditingTransaction(null);
+      setActiveTab('history');
+    } catch (e) {
+      alert('حدث خطأ أثناء الحفظ');
+    }
   };
 
   const startEditTransaction = (t: Transaction) => {
@@ -210,35 +216,71 @@ const App: React.FC = () => {
       return;
     }
     if (confirm('هل أنت متأكد من الحذف؟')) {
-      const updated = transactions.filter(t => t.id !== id);
-      saveData(updated, users, config);
+      try {
+        await fetch(`${API_URL}?action=deleteTransaction&id=${id}`, { method: 'DELETE' });
+        fetchAllData();
+      } catch (e) {
+        alert('فشل الحذف');
+      }
     }
   };
 
   const togglePaidStatus = async (id: string) => {
-    const updated = transactions.map(t => 
-      t.id === id ? { ...t, isPaid: !t.isPaid } : t
-    );
-    saveData(updated, users, config);
+    try {
+      await fetch(`${API_URL}?action=togglePaid`, {
+        method: 'POST',
+        body: JSON.stringify({ id })
+      });
+      // Optimistic update
+      setTransactions(prev => prev.map(t => t.id === id ? { ...t, isPaid: !t.isPaid } : t));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const updateExchangeRates = async (newRates: ExchangeRates) => {
-    const newConfig = { ...config, rates: newRates };
-    saveData(transactions, users, newConfig);
+    try {
+      await fetch(`${API_URL}?action=updateRates`, {
+        method: 'POST',
+        body: JSON.stringify(newRates)
+      });
+      setConfig(prev => ({ ...prev, rates: newRates }));
+    } catch (e) {
+      alert('فشل تحديث الأسعار');
+    }
   };
 
   const handleAddUser = async (user: User) => {
-    const newUsers = [...users, user];
-    saveData(transactions, newUsers, config);
+    try {
+      await fetch(`${API_URL}?action=addUser`, {
+        method: 'POST',
+        body: JSON.stringify(user)
+      });
+      fetchAllData();
+    } catch (e) {
+      alert('فشل إضافة المستخدم');
+    }
   };
 
   const handleDeleteUser = async (id: string) => {
-    const newUsers = users.filter(u => u.id !== id);
-    saveData(transactions, newUsers, config);
+    try {
+      await fetch(`${API_URL}?action=deleteUser&id=${id}`, { method: 'DELETE' });
+      fetchAllData();
+    } catch (e) {
+      alert('فشل حذف المستخدم');
+    }
   };
 
   const handleUpdateConfig = async (newConfig: AppConfig) => {
-    saveData(transactions, users, newConfig);
+    try {
+      await fetch(`${API_URL}?action=updateConfig`, {
+        method: 'POST',
+        body: JSON.stringify(newConfig)
+      });
+      setConfig(newConfig);
+    } catch (e) {
+      alert('فشل تحديث الإعدادات');
+    }
   };
 
   // Stats Logic
@@ -318,7 +360,7 @@ const App: React.FC = () => {
             </h1>
             <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
               أهلاً بك، {currentUser.name}
-              <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">محلي (Local Storage)</span>
+              <span className="text-xs bg-[#c4f057] text-[#0d1f18] px-2 py-1 rounded-full font-bold">Online / MySQL</span>
             </p>
           </div>
           
@@ -339,6 +381,18 @@ const App: React.FC = () => {
             </div>
           </div>
         </header>
+
+        {loading && (
+          <div className="fixed top-0 left-0 w-full h-1 bg-gray-200 z-[100]">
+             <div className="h-full bg-[#c4f057] animate-[pulse_1s_ease-in-out_infinite]"></div>
+          </div>
+        )}
+
+        {apiError && (
+          <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-xl mb-4 text-sm font-bold text-center" dir="rtl">
+            ⚠️ {apiError}
+          </div>
+        )}
 
         {advice && activeTab === 'dashboard' && (
           <div className="mb-6 p-4 bg-[#0d1f18] text-white rounded-2xl animate-fade-in shadow-lg relative overflow-hidden">

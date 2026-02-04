@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { TransactionType, Currency, Transaction, ExchangeRates } from '../types';
 
@@ -45,9 +44,6 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onSubmit, initialData
       isPaid,
       currency,
       date,
-      // If editing, keep original rate unless logic dictates otherwise. 
-      // Here we use current rate for new, and keep old rate for edit unless we want to "Update to current rate"
-      // Simpler approach: Always update to current rate if we are saving now.
       exchangeRate: currentRates[currency] 
     });
 
@@ -76,8 +72,11 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onSubmit, initialData
           {initialData ? 'تعديل المعاملة' : 'إضافة منتج / خدمة'}
         </h2>
         {initialData && onCancel && (
-          <button onClick={onCancel} className="text-gray-400 hover:text-red-500 font-bold text-sm">
-            إلغاء ✕
+          <button onClick={onCancel} className="text-gray-400 hover:text-red-500 font-bold text-sm flex items-center gap-1">
+             إلغاء 
+             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
           </button>
         )}
       </div>
@@ -191,7 +190,11 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onSubmit, initialData
              <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${
                isPaid ? 'border-[#0d1f18] bg-[#0d1f18]' : 'border-gray-300'
              }`}>
-               {isPaid && <span className="text-white text-xs">✓</span>}
+               {isPaid && (
+                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor" className="w-3.5 h-3.5 text-white">
+                   <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                 </svg>
+               )}
              </div>
              <span className="font-bold text-[#0d1f18]">الحالة: {isPaid ? 'مدفوع (Paid)' : 'معلق (Pending)'}</span>
           </div>
@@ -202,7 +205,11 @@ const TransactionForm: React.FC<TransactionFormProps> = ({ onSubmit, initialData
           className="w-full bg-[#0d1f18] hover:bg-[#1a3328] text-white py-4 rounded-2xl font-bold text-lg shadow-xl shadow-gray-200 transition-all mt-4 flex justify-center items-center gap-2 group"
         >
           <span>{initialData ? 'تحديث البيانات' : 'حفظ المعاملة'}</span>
-          <span className="group-hover:translate-x-1 transition-transform">←</span>
+          <span className="group-hover:-translate-x-1 transition-transform">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+            </svg>
+          </span>
         </button>
       </form>
     </div>

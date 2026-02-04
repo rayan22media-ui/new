@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { FinancialStats, Transaction, TransactionType } from '../types';
 import { BarChart, Bar, XAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
@@ -42,7 +41,11 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, transactions }) => {
                  <p className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">إجمالي الدخل (USD)</p>
                  <h3 className="text-3xl font-bold text-[#0d1f18]">${stats.totalIncome.toLocaleString(undefined, { maximumFractionDigits: 0 })}</h3>
                </div>
-               <div className="p-3 bg-gray-50 rounded-full text-gray-400">↓</div>
+               <div className="p-3 bg-gray-50 rounded-full text-gray-400">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 4.5l-15 15m0 0h11.25m-11.25 0V8.25" />
+                  </svg>
+               </div>
              </div>
              <div className="flex gap-2 mt-2">
                 <span className="text-xs font-bold bg-[#c4f057]/20 text-[#0d1f18] px-2 py-1 rounded-lg">
@@ -57,7 +60,11 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, transactions }) => {
                  <p className="text-gray-400 text-xs font-bold uppercase tracking-wider mb-1">إجمالي المصروفات (USD)</p>
                  <h3 className="text-3xl font-bold text-[#0d1f18]">${stats.totalExpense.toLocaleString(undefined, { maximumFractionDigits: 0 })}</h3>
                </div>
-               <div className="p-3 bg-gray-50 rounded-full text-gray-400">↑</div>
+               <div className="p-3 bg-gray-50 rounded-full text-gray-400">
+                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                   <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+                 </svg>
+               </div>
              </div>
              <div className="w-full bg-gray-100 h-2 rounded-full mt-2 overflow-hidden">
                <div className="bg-[#0d1f18] h-full rounded-full" style={{ width: `${Math.min(((stats.totalExpense / (stats.totalIncome || 1)) * 100), 100)}%` }}></div>
@@ -71,19 +78,32 @@ const Dashboard: React.FC<DashboardProps> = ({ stats, transactions }) => {
         <div className="lg:col-span-2 bg-white p-8 rounded-[2rem] shadow-sm border border-gray-100">
           <div className="flex justify-between items-center mb-8">
              <h3 className="font-bold text-xl text-[#0d1f18]">آخر المعاملات</h3>
-             <button className="text-gray-400 hover:text-[#0d1f18] text-sm font-bold">عرض الكل</button>
+             <button className="text-gray-400 hover:text-[#0d1f18] text-sm font-bold flex items-center gap-1">
+               عرض الكل
+               <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4 transform rotate-180">
+                 <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+               </svg>
+             </button>
           </div>
           
           <div className="space-y-4">
             {transactions.slice(0, 5).map((t) => (
               <div key={t.id} className="flex items-center justify-between group cursor-pointer hover:bg-gray-50 p-2 rounded-xl transition-colors">
                 <div className="flex items-center gap-4">
-                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-xl transition-colors ${
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center transition-colors ${
                     t.type === TransactionType.INCOME 
                     ? 'bg-[#c4f057]/20 text-[#0d1f18]' 
                     : 'bg-gray-100 text-gray-400'
                   }`}>
-                    {t.type === TransactionType.INCOME ? '↙' : '↗'}
+                    {t.type === TransactionType.INCOME ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 4.5l-15 15m0 0h11.25m-11.25 0V8.25" />
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 19.5l15-15m0 0H8.25m11.25 0v11.25" />
+                      </svg>
+                    )}
                   </div>
                   <div>
                     <h4 className="font-bold text-[#0d1f18] text-sm">{t.description}</h4>

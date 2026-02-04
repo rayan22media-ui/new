@@ -10,9 +10,7 @@ import AdminPanel from './components/AdminPanel';
 import ExchangeRatePanel from './components/ExchangeRatePanel';
 import { GoogleGenAI } from "@google/genai";
 
-// Firebase Imports
-import { db } from './src/firebase';
-import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, setDoc, query, orderBy } from 'firebase/firestore';
+const DB_KEY = 'story_accounting_db';
 
 const App: React.FC = () => {
   // Authentication State
@@ -42,44 +40,123 @@ const App: React.FC = () => {
   }, []);
 
   // ---------------------------------------------------------
-  // 🔥 REAL-TIME DATABASE LISTENERS (FIREBASE)
+  // 💾 LOCAL STORAGE DATABASE
   // ---------------------------------------------------------
 
-  useEffect(() => {
-    // 1. Listen to Transactions
-    const q = query(collection(db, "transactions"), orderBy("date", "desc"));
-    const unsubscribeTrans = onSnapshot(q, (snapshot) => {
-      const transData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Transaction));
-      setTransactions(transData);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching transactions:", error);
-      // Fallback if firebase fails (e.g. invalid config)
-      setLoading(false);
-    });
-
-    // 2. Listen to Config (Rates, etc)
-    const unsubscribeConfig = onSnapshot(doc(db, "app_data", "config"), (doc) => {
-      if (doc.exists()) {
-        setConfig(doc.data() as AppConfig);
-      } else {
-        // Initialize config if not exists
-        setDoc(doc.ref, config);
+  const loadData = () => {
+    try {
+      const storedData = localStorage.getItem(DB_KEY);
+      if (storedData) {
+        const parsed = JSON.parse(storedData);
+        setTransactions(parsed.transactions || []);
+        setUsers(parsed.users || []);
+        if (parsed.config) setConfig(parsed.config);
       }
-    });
+    } catch (e) {
+      console.error("Failed to load local data", e);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    // 3. Listen to Users
-    const unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
-      const usersData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
-      setUsers(usersData);
-    });
-
-    return () => {
-      unsubscribeTrans();
-      unsubscribeConfig();
-      unsubscribeUsers();
+  const saveData = (newTransactions: Transaction[], newUsers: User[], newConfig: AppConfig) => {
+    const db = {
+      transactions: newTransactions,
+      users: newUsers,
+      config: newConfig
     };
+    localStorage.setItem(DB_KEY, JSON.stringify(db));
+    // Update State
+    setTransactions(newTransactions);
+    setUsers(newUsers);
+    setConfig(newConfig);
+  };
+
+  useEffect(() => {
+    loadData();
   }, []);
+
+  // ---------------------------------------------------------
+  // 📊 EXCEL (CSV) IMPORT / EXPORT
+  // ---------------------------------------------------------
+
+  const exportToCSV = () => {
+    // BOM for Excel to read Arabic correctly
+    const BOM = "\uFEFF"; 
+    const headers = ['ID', 'Invoice Number', 'Date', 'Type', 'Customer', 'Description', 'Amount', 'Quantity', 'Currency', 'Is Paid'];
+    
+    const rows = transactions.map(t => [
+      t.id,
+      t.invoiceNumber,
+      t.date,
+      t.type,
+      `"${t.customerName || ''}"`, // Quote strings with commas
+      `"${t.description}"`,
+      t.amount,
+      t.quantity,
+      t.currency,
+      t.isPaid ? 'TRUE' : 'FALSE'
+    ]);
+
+    const csvContent = BOM + [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `Story_Transactions_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const importFromCSV = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target?.result as string;
+      if (!text) return;
+
+      const lines = text.split('\n');
+      const newTrans: Transaction[] = [];
+
+      // Skip header row (index 0)
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        
+        // Simple CSV parser (doesn't handle commas inside quotes perfectly without regex, but sufficient for simple import)
+        // Removing quotes for cleaner data
+        const cols = line.split(',').map(c => c.replace(/^"|"$/g, ''));
+        
+        if (cols.length >= 9) {
+          newTrans.push({
+            id: cols[0] || crypto.randomUUID(),
+            invoiceNumber: cols[1] || `IMP-${i}`,
+            date: cols[2] || new Date().toISOString().split('T')[0],
+            type: cols[3] as TransactionType || TransactionType.INCOME,
+            customerName: cols[4],
+            description: cols[5],
+            amount: parseFloat(cols[6]) || 0,
+            quantity: parseFloat(cols[7]) || 1,
+            currency: (cols[8] as Currency) || Currency.USD,
+            isPaid: cols[9]?.toLowerCase() === 'true',
+            exchangeRate: 1 // Default
+          });
+        }
+      }
+
+      if (confirm(`تم العثور على ${newTrans.length} معاملة. هل تريد استبدال البيانات الحالية؟\n(اضغط Cancel للإضافة فوق البيانات الحالية)`)) {
+         saveData(newTrans, users, config);
+      } else {
+         saveData([...transactions, ...newTrans], users, config);
+      }
+      alert('تم استيراد البيانات بنجاح!');
+    };
+    reader.readAsText(file);
+  };
 
   // ---------------------------------------------------------
   // HANDLERS
@@ -97,28 +174,24 @@ const App: React.FC = () => {
   };
 
   const handleTransactionSubmit = async (data: any) => {
-    try {
-      if (editingTransaction) {
-        // Update existing in Firestore
-        const transRef = doc(db, "transactions", editingTransaction.id);
-        await updateDoc(transRef, data);
-        setEditingTransaction(null);
-      } else {
-        // Create new in Firestore
-        // We let Firestore generate the ID, or we create a ref
-        const newTransRef = doc(collection(db, "transactions"));
-        const newTransaction: Transaction = {
-          ...data,
-          id: newTransRef.id, // Use Firestore ID
-          invoiceNumber: `ST-${new Date().getFullYear()}${String(transactions.length + 1).padStart(4, '0')}`
-        };
-        await setDoc(newTransRef, newTransaction);
-      }
-      setActiveTab('history');
-    } catch (e) {
-      alert("حدث خطأ أثناء الحفظ. تأكد من إعدادات Firebase.");
-      console.error(e);
+    let updatedTransactions = [...transactions];
+    
+    if (editingTransaction) {
+      updatedTransactions = updatedTransactions.map(t => 
+        t.id === editingTransaction.id ? { ...data, id: t.id, invoiceNumber: t.invoiceNumber } : t
+      );
+    } else {
+      const newTransaction = {
+        ...data,
+        id: crypto.randomUUID(),
+        invoiceNumber: `ST-${new Date().getFullYear()}${String(transactions.length + 1).padStart(4, '0')}`
+      };
+      updatedTransactions = [newTransaction, ...updatedTransactions];
     }
+
+    saveData(updatedTransactions, users, config);
+    setEditingTransaction(null);
+    setActiveTab('history');
   };
 
   const startEditTransaction = (t: Transaction) => {
@@ -136,43 +209,39 @@ const App: React.FC = () => {
       alert('ليس لديك صلاحية الحذف');
       return;
     }
-    try {
-      await deleteDoc(doc(db, "transactions", id));
-    } catch (e) {
-      console.error(e);
-      alert("حدث خطأ أثناء الحذف");
+    if (confirm('هل أنت متأكد من الحذف؟')) {
+      const updated = transactions.filter(t => t.id !== id);
+      saveData(updated, users, config);
     }
   };
 
   const togglePaidStatus = async (id: string) => {
-    const t = transactions.find(tr => tr.id === id);
-    if (t) {
-      await updateDoc(doc(db, "transactions", id), {
-        isPaid: !t.isPaid
-      });
-    }
+    const updated = transactions.map(t => 
+      t.id === id ? { ...t, isPaid: !t.isPaid } : t
+    );
+    saveData(updated, users, config);
   };
 
   const updateExchangeRates = async (newRates: ExchangeRates) => {
-    // Update config in Firestore
     const newConfig = { ...config, rates: newRates };
-    await setDoc(doc(db, "app_data", "config"), newConfig);
-    // Config state will auto-update via listener
+    saveData(transactions, users, newConfig);
   };
 
   const handleAddUser = async (user: User) => {
-    await setDoc(doc(db, "users", user.id), user);
+    const newUsers = [...users, user];
+    saveData(transactions, newUsers, config);
   };
 
   const handleDeleteUser = async (id: string) => {
-    await deleteDoc(doc(db, "users", id));
+    const newUsers = users.filter(u => u.id !== id);
+    saveData(transactions, newUsers, config);
   };
 
   const handleUpdateConfig = async (newConfig: AppConfig) => {
-    await setDoc(doc(db, "app_data", "config"), newConfig);
+    saveData(transactions, users, newConfig);
   };
 
-  // Convert everything to USD for Stats
+  // Stats Logic
   const getStats = () => {
     const calculateUSD = (t: Transaction) => {
       const rate = t.exchangeRate || 1; 
@@ -206,7 +275,6 @@ const App: React.FC = () => {
 
   const generateFinancialAdvice = async () => {
     const stats = getStats();
-    // Safety check for API KEY
     if (!process.env.API_KEY) {
        setAdvice("الرجاء إضافة API_KEY للذكاء الاصطناعي");
        return;
@@ -250,7 +318,7 @@ const App: React.FC = () => {
             </h1>
             <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
               أهلاً بك، {currentUser.name}
-              {loading && <span className="text-xs text-[#c4f057] animate-pulse">جاري المزامنة...</span>}
+              <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full">محلي (Local Storage)</span>
             </p>
           </div>
           
@@ -260,7 +328,9 @@ const App: React.FC = () => {
                 onClick={generateFinancialAdvice}
                 className="bg-white border border-gray-200 hover:border-[#c4f057] text-[#0d1f18] px-4 py-2 rounded-xl flex items-center gap-2 shadow-sm transition-all text-sm font-bold"
               >
-                <span>✨</span>
+                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-[#0d1f18]">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z" />
+                </svg>
                 <span>تحليل AI</span>
               </button>
             )}
@@ -276,13 +346,6 @@ const App: React.FC = () => {
             <h3 className="font-bold text-[#c4f057] mb-2 text-sm">مستشار Story الذكي:</h3>
             <p className="text-gray-200 text-sm leading-relaxed">{advice}</p>
           </div>
-        )}
-
-        {/* Firebase Config Warning if keys are missing */}
-        {transactions.length === 0 && loading === false && (
-             <div className="mb-6 p-4 bg-yellow-50 text-yellow-800 rounded-2xl border border-yellow-200 text-sm">
-               تنبيه: إذا لم تظهر البيانات، تأكد من وضع إعدادات Firebase في ملف <code>src/firebase.ts</code>
-             </div>
         )}
 
         {activeTab === 'dashboard' && (
@@ -325,13 +388,54 @@ const App: React.FC = () => {
         )}
 
         {activeTab === 'admin' && currentUser.role === UserRole.SUPER_ADMIN && (
-          <AdminPanel 
-            config={config} 
-            onUpdateConfig={handleUpdateConfig}
-            users={users}
-            onAddUser={handleAddUser}
-            onDeleteUser={handleDeleteUser}
-          />
+          <div className="space-y-6">
+            <AdminPanel 
+              config={config} 
+              onUpdateConfig={handleUpdateConfig}
+              users={users}
+              onAddUser={handleAddUser}
+              onDeleteUser={handleDeleteUser}
+            />
+            
+            {/* EXCEL IMPORT/EXPORT SECTION */}
+            <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-gray-100 animate-fade-in">
+              <h2 className="text-xl font-bold text-[#0d1f18] mb-6 flex items-center gap-2">
+                <span className="w-8 h-8 bg-[#c4f057] rounded-lg flex items-center justify-center text-sm">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5 text-[#0d1f18]">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z" />
+                  </svg>
+                </span>
+                إدارة قاعدة البيانات (Excel)
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div className="p-6 bg-gray-50 rounded-2xl border border-gray-100">
+                  <h3 className="font-bold text-[#0d1f18] mb-2">تصدير البيانات</h3>
+                  <p className="text-gray-500 text-xs mb-4">تحميل نسخة من جميع المعاملات بصيغة Excel (CSV).</p>
+                  <button 
+                    onClick={exportToCSV}
+                    className="w-full bg-[#0d1f18] text-white py-3 rounded-xl font-bold text-sm hover:bg-[#1a3328] transition-all flex items-center justify-center gap-2"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                    </svg>
+                    تحميل ملف Excel
+                  </button>
+                </div>
+
+                <div className="p-6 bg-gray-50 rounded-2xl border border-gray-100">
+                  <h3 className="font-bold text-[#0d1f18] mb-2">استيراد بيانات</h3>
+                  <p className="text-gray-500 text-xs mb-4">رفع ملف Excel (CSV) لاستعادة البيانات.</p>
+                  <label className="w-full bg-white border border-dashed border-gray-300 text-gray-500 py-3 rounded-xl font-bold text-sm hover:bg-gray-50 transition-all flex items-center justify-center gap-2 cursor-pointer">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" />
+                    </svg>
+                    اختر ملف CSV
+                    <input type="file" accept=".csv" onChange={importFromCSV} className="hidden" />
+                  </label>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
       </main>
     </div>

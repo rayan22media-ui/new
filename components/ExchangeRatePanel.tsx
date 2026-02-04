@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { ExchangeRates } from '../types';
 
@@ -30,7 +29,11 @@ const ExchangeRatePanel: React.FC<ExchangeRatePanelProps> = ({ currentRates, onU
     <div className="space-y-8 animate-fade-in max-w-2xl mx-auto">
       <div className="bg-white p-8 rounded-[2rem] shadow-sm border border-gray-100">
         <div className="flex items-center gap-4 mb-8">
-          <div className="w-12 h-12 bg-[#0d1f18] rounded-2xl flex items-center justify-center text-2xl">💱</div>
+          <div className="w-12 h-12 bg-[#0d1f18] rounded-2xl flex items-center justify-center text-white">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" />
+            </svg>
+          </div>
           <div>
             <h2 className="text-2xl font-bold text-[#0d1f18]">أسعار الصرف</h2>
             <p className="text-gray-400 text-sm">حدد قيمة العملات مقابل 1 دولار أمريكي ($)</p>

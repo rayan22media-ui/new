@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { Transaction, TransactionType, User, UserRole, AppConfig, ExchangeRates, Currency } from './types';
 import Dashboard from './components/Dashboard';
@@ -11,6 +10,10 @@ import AdminPanel from './components/AdminPanel';
 import ExchangeRatePanel from './components/ExchangeRatePanel';
 import { GoogleGenAI } from "@google/genai";
 
+// Firebase Imports
+import { db } from './src/firebase';
+import { collection, onSnapshot, addDoc, updateDoc, deleteDoc, doc, setDoc, query, orderBy } from 'firebase/firestore';
+
 const App: React.FC = () => {
   // Authentication State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -22,7 +25,7 @@ const App: React.FC = () => {
     sheetUrl: '',
     googleSheetId: '',
     lastSync: '',
-    rates: { USD: 1, TRY: 32, SYP: 14000, SAR: 3.75 } // Defaults including SAR
+    rates: { USD: 1, TRY: 32, SYP: 14000, SAR: 3.75 } 
   });
 
   // UI State
@@ -30,29 +33,57 @@ const App: React.FC = () => {
   const [selectedInvoice, setSelectedInvoice] = useState<Transaction | null>(null);
   const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
   const [advice, setAdvice] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
 
-  // Initialize Data
+  // Initialize Session
   useEffect(() => {
     const session = localStorage.getItem('story_session');
     if (session) setCurrentUser(JSON.parse(session));
-
-    const savedData = localStorage.getItem('story_accounting_data');
-    if (savedData) setTransactions(JSON.parse(savedData));
-
-    const savedUsers = localStorage.getItem('story_users');
-    if (savedUsers) setUsers(JSON.parse(savedUsers));
-
-    const savedConfig = localStorage.getItem('story_config');
-    if (savedConfig) setConfig(JSON.parse(savedConfig));
   }, []);
 
+  // ---------------------------------------------------------
+  // 🔥 REAL-TIME DATABASE LISTENERS (FIREBASE)
+  // ---------------------------------------------------------
+
   useEffect(() => {
-    if (currentUser) {
-      localStorage.setItem('story_accounting_data', JSON.stringify(transactions));
-      localStorage.setItem('story_users', JSON.stringify(users));
-      localStorage.setItem('story_config', JSON.stringify(config));
-    }
-  }, [transactions, users, config, currentUser]);
+    // 1. Listen to Transactions
+    const q = query(collection(db, "transactions"), orderBy("date", "desc"));
+    const unsubscribeTrans = onSnapshot(q, (snapshot) => {
+      const transData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as Transaction));
+      setTransactions(transData);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching transactions:", error);
+      // Fallback if firebase fails (e.g. invalid config)
+      setLoading(false);
+    });
+
+    // 2. Listen to Config (Rates, etc)
+    const unsubscribeConfig = onSnapshot(doc(db, "app_data", "config"), (doc) => {
+      if (doc.exists()) {
+        setConfig(doc.data() as AppConfig);
+      } else {
+        // Initialize config if not exists
+        setDoc(doc.ref, config);
+      }
+    });
+
+    // 3. Listen to Users
+    const unsubscribeUsers = onSnapshot(collection(db, "users"), (snapshot) => {
+      const usersData = snapshot.docs.map(doc => ({ ...doc.data(), id: doc.id } as User));
+      setUsers(usersData);
+    });
+
+    return () => {
+      unsubscribeTrans();
+      unsubscribeConfig();
+      unsubscribeUsers();
+    };
+  }, []);
+
+  // ---------------------------------------------------------
+  // HANDLERS
+  // ---------------------------------------------------------
 
   const handleLogin = (user: User) => {
     setCurrentUser(user);
@@ -65,23 +96,28 @@ const App: React.FC = () => {
     localStorage.removeItem('story_session');
   };
 
-  const handleTransactionSubmit = (data: any) => {
-    if (editingTransaction) {
-      // Update existing
-      setTransactions(transactions.map(t => 
-        t.id === editingTransaction.id ? { ...t, ...data } : t
-      ));
-      setEditingTransaction(null);
+  const handleTransactionSubmit = async (data: any) => {
+    try {
+      if (editingTransaction) {
+        // Update existing in Firestore
+        const transRef = doc(db, "transactions", editingTransaction.id);
+        await updateDoc(transRef, data);
+        setEditingTransaction(null);
+      } else {
+        // Create new in Firestore
+        // We let Firestore generate the ID, or we create a ref
+        const newTransRef = doc(collection(db, "transactions"));
+        const newTransaction: Transaction = {
+          ...data,
+          id: newTransRef.id, // Use Firestore ID
+          invoiceNumber: `ST-${new Date().getFullYear()}${String(transactions.length + 1).padStart(4, '0')}`
+        };
+        await setDoc(newTransRef, newTransaction);
+      }
       setActiveTab('history');
-    } else {
-      // Create new
-      const newTransaction: Transaction = {
-        ...data,
-        id: crypto.randomUUID(),
-        invoiceNumber: `ST-${new Date().getFullYear()}${String(transactions.length + 1).padStart(4, '0')}`
-      };
-      setTransactions([newTransaction, ...transactions]);
-      setActiveTab('history');
+    } catch (e) {
+      alert("حدث خطأ أثناء الحفظ. تأكد من إعدادات Firebase.");
+      console.error(e);
     }
   };
 
@@ -95,28 +131,50 @@ const App: React.FC = () => {
     setActiveTab('history');
   };
 
-  const deleteTransaction = (id: string) => {
+  const deleteTransaction = async (id: string) => {
     if (currentUser?.role === UserRole.VIEWER) {
       alert('ليس لديك صلاحية الحذف');
       return;
     }
-    setTransactions(transactions.filter(t => t.id !== id));
+    try {
+      await deleteDoc(doc(db, "transactions", id));
+    } catch (e) {
+      console.error(e);
+      alert("حدث خطأ أثناء الحذف");
+    }
   };
 
-  const togglePaidStatus = (id: string) => {
-    setTransactions(transactions.map(t => 
-      t.id === id ? { ...t, isPaid: !t.isPaid } : t
-    ));
+  const togglePaidStatus = async (id: string) => {
+    const t = transactions.find(tr => tr.id === id);
+    if (t) {
+      await updateDoc(doc(db, "transactions", id), {
+        isPaid: !t.isPaid
+      });
+    }
   };
 
-  const updateExchangeRates = (newRates: ExchangeRates) => {
-    setConfig({ ...config, rates: newRates });
+  const updateExchangeRates = async (newRates: ExchangeRates) => {
+    // Update config in Firestore
+    const newConfig = { ...config, rates: newRates };
+    await setDoc(doc(db, "app_data", "config"), newConfig);
+    // Config state will auto-update via listener
+  };
+
+  const handleAddUser = async (user: User) => {
+    await setDoc(doc(db, "users", user.id), user);
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    await deleteDoc(doc(db, "users", id));
+  };
+
+  const handleUpdateConfig = async (newConfig: AppConfig) => {
+    await setDoc(doc(db, "app_data", "config"), newConfig);
   };
 
   // Convert everything to USD for Stats
   const getStats = () => {
     const calculateUSD = (t: Transaction) => {
-      // Logic: Amount / Rate = USD (Assuming Rate is X Currency per 1 USD)
       const rate = t.exchangeRate || 1; 
       return (t.amount * t.quantity) / rate;
     };
@@ -148,6 +206,11 @@ const App: React.FC = () => {
 
   const generateFinancialAdvice = async () => {
     const stats = getStats();
+    // Safety check for API KEY
+    if (!process.env.API_KEY) {
+       setAdvice("الرجاء إضافة API_KEY للذكاء الاصطناعي");
+       return;
+    }
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     try {
       const response = await ai.models.generateContent({
@@ -185,7 +248,10 @@ const App: React.FC = () => {
             <h1 className="text-2xl font-bold text-[#0d1f18]">
               {activeTab === 'rates' ? 'إعدادات العملات' : 'لوحة التحكم'}
             </h1>
-            <p className="text-gray-400 text-sm mt-1">أهلاً بك، {currentUser.name}</p>
+            <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
+              أهلاً بك، {currentUser.name}
+              {loading && <span className="text-xs text-[#c4f057] animate-pulse">جاري المزامنة...</span>}
+            </p>
           </div>
           
           <div className="flex items-center gap-3">
@@ -210,6 +276,13 @@ const App: React.FC = () => {
             <h3 className="font-bold text-[#c4f057] mb-2 text-sm">مستشار Story الذكي:</h3>
             <p className="text-gray-200 text-sm leading-relaxed">{advice}</p>
           </div>
+        )}
+
+        {/* Firebase Config Warning if keys are missing */}
+        {transactions.length === 0 && loading === false && (
+             <div className="mb-6 p-4 bg-yellow-50 text-yellow-800 rounded-2xl border border-yellow-200 text-sm">
+               تنبيه: إذا لم تظهر البيانات، تأكد من وضع إعدادات Firebase في ملف <code>src/firebase.ts</code>
+             </div>
         )}
 
         {activeTab === 'dashboard' && (
@@ -254,10 +327,10 @@ const App: React.FC = () => {
         {activeTab === 'admin' && currentUser.role === UserRole.SUPER_ADMIN && (
           <AdminPanel 
             config={config} 
-            onUpdateConfig={setConfig}
+            onUpdateConfig={handleUpdateConfig}
             users={users}
-            onAddUser={(user) => setUsers([...users, user])}
-            onDeleteUser={(id) => setUsers(users.filter(u => u.id !== id))}
+            onAddUser={handleAddUser}
+            onDeleteUser={handleDeleteUser}
           />
         )}
       </main>
